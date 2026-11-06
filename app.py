@@ -27,7 +27,6 @@ HEADERS = {
     )
 }
 
-# Популярные страны для быстрого выбора в selectbox
 COUNTRY_OPTIONS = [
     "us", "ru", "gb", "de", "fr", "it", "es", "ca",
     "au", "jp", "cn", "br", "in", "ua", "kz", "by",
@@ -40,10 +39,9 @@ COUNTRY_OPTIONS = [
 def extract_app_id(raw: str) -> int | None:
     """
     Извлекает числовой ID из строки. Поддерживает:
-      - чистые цифры: '389801252'
-      - URL App Store: 'https://apps.apple.com/us/app/instagram/id389801252'
+      - '389801252'
+      - 'https://apps.apple.com/us/app/instagram/id389801252'
       - 'id389801252'
-    Возвращает int или None, если извлечь не удалось.
     """
     if not raw:
         return None
@@ -56,21 +54,22 @@ def extract_app_id(raw: str) -> int | None:
     return None
 
 
-def fetch_reviews(app_id: int, country: str, progress_cb=None) -> tuple[list[dict], list[str]]:
+def fetch_reviews(app_id: int, country: str, max_pages: int = MAX_PAGES,
+                  progress_cb=None) -> tuple[list[dict], list[str]]:
     """
     Собирает отзывы из RSS-фида Apple.
-    Возвращает (список отзывов, список сообщений лога).
-    progress_cb — необязательный callback для обновления прогресс-бара.
+    Возвращает (список отзывов, лог).
+    progress_cb(current, total, text) — для обновления st.progress.
     """
     reviews: list[dict] = []
     log: list[str] = []
 
-    for page in range(1, MAX_PAGES + 1):
+    for page in range(1, max_pages + 1):
         url = RSS_URL_TEMPLATE.format(country=country, page=page, app_id=app_id)
         log.append(f"Страница {page}: {url}")
 
         if progress_cb:
-            progress_cb(page - 1, MAX_PAGES, f"Загружаю страницу {page} из {MAX_PAGES}...")
+            progress_cb(page - 1, max_pages, f"Загружаю страницу {page} из {max_pages}...")
 
         try:
             response = requests.get(url, headers=HEADERS, timeout=15)
@@ -94,7 +93,6 @@ def fetch_reviews(app_id: int, country: str, progress_cb=None) -> tuple[list[dic
         if isinstance(entries, dict):
             entries = [entries]
 
-        # Отсекаем служебную запись о самом приложении
         entries = [e for e in entries if "im:rating" in e]
 
         if not entries:
@@ -110,23 +108,20 @@ def fetch_reviews(app_id: int, country: str, progress_cb=None) -> tuple[list[dic
                 "version": entry.get("im:version", {}).get("label", ""),
                 "updated": entry.get("updated", {}).get("label", ""),
             })
-
         log.append(f"✅ Получено отзывов со страницы: {len(entries)}")
         time.sleep(0.7)
 
     if progress_cb:
-        progress_cb(MAX_PAGES, MAX_PAGES, "Готово")
+        progress_cb(max_pages, max_pages, "Готово")
 
     return reviews, log
 
 
 def to_dataframe(reviews: list[dict]) -> pd.DataFrame:
-    """Формирует DataFrame с нормальными типами."""
     df = pd.DataFrame(reviews)
     if df.empty:
         return df
     df["rating"] = pd.to_numeric(df["rating"], errors="coerce").astype("Int64")
-    # Приводим дату к datetime (на случай фильтрации)
     df["updated"] = pd.to_datetime(df["updated"], errors="coerce", utc=True)
     return df
 
@@ -146,7 +141,8 @@ st.caption(
     "Максимум — 10 страниц (~500 отзывов), это ограничение самой Apple."
 )
 
-# --- Sidebar: параметры сбора ---
+
+# --- Sidebar ---
 with st.sidebar:
     st.header("⚙️ Параметры")
 
@@ -181,6 +177,7 @@ with st.sidebar:
 
     start_btn = st.button("🚀 Собрать отзывы", type="primary", use_container_width=True)
 
+
 # --- Валидация страны ---
 final_country = custom_country.strip().lower() or country
 if not re.fullmatch(r"[a-z]{2}", final_country):
@@ -200,77 +197,28 @@ if start_btn:
         )
         st.stop()
 
-    st.info(f"**APP_ID** = `{app_id}`  |  **COUNTRY** = `{final_country}`  |  **MAX_PAGES** = `{max_pages}`")
+    st.info(
+        f"**APP_ID** = `{app_id}`  |  "
+        f"**COUNTRY** = `{final_country}`  |  "
+        f"**MAX_PAGES** = `{max_pages}`"
+    )
 
     progress_bar = st.progress(0, text="Начинаю сбор...")
-    log_placeholder = st.empty()
 
-    def update_progress(current, total, text):
-        # Streamlit ждёт значение в диапазоне 0..1 для st.progress
+    def update_progress(current: int, total: int, text: str) -> None:
         progress_bar.progress(min(current / total, 1.0), text=text)
 
-    # Собираем (передаём ограниченное число страниц через обёртку)
-    reviews, log = [], []
     with st.spinner("Собираю отзывы..."):
-        # Локальная копия MAX_PAGES — чтобы учесть слайдер
-        import app as _self  # noqa: F401 — трюк, чтобы не плодить глобальные переменные
-        # Проще: временно ограничиваем цикл через параметр
-        # Перепишем вызов явно:
-        reviews, log = [], []
+        reviews, log = fetch_reviews(
+            app_id=app_id,
+            country=final_country,
+            max_pages=max_pages,
+            progress_cb=update_progress,
+        )
 
-        original_max = MAX_PAGES  # noqa: F841 (для читаемости)
-
-        # Ручной цикл — учитываем max_pages из слайдера
-        for page in range(1, max_pages + 1):
-            url = RSS_URL_TEMPLATE.format(country=final_country, page=page, app_id=app_id)
-            log.append(f"Страница {page}: {url}")
-            update_progress(page - 1, max_pages, f"Загружаю страницу {page} из {max_pages}...")
-
-            try:
-                response = requests.get(url, headers=HEADERS, timeout=15)
-            except requests.RequestException as e:
-                log.append(f"❌ Ошибка сети на странице {page}: {e}")
-                break
-
-            if response.status_code != 200:
-                log.append(f"❌ Статус {response.status_code} на странице {page}. Останавливаюсь.")
-                break
-
-            try:
-                data = response.json()
-            except ValueError:
-                log.append(f"⚠️ Страница {page}: не удалось распарсить JSON.")
-                break
-
-            feed = data.get("feed", {})
-            entries = feed.get("entry", [])
-            if isinstance(entries, dict):
-                entries = [entries]
-            entries = [e for e in entries if "im:rating" in e]
-
-            if not entries:
-                log.append(f"ℹ️ Страница {page} пуста — отзывы закончились.")
-                break
-
-            for entry in entries:
-                reviews.append({
-                    "author":  entry.get("author", {}).get("name", {}).get("label", ""),
-                    "title":   entry.get("title", {}).get("label", ""),
-                    "content": entry.get("content", {}).get("label", ""),
-                    "rating":  entry.get("im:rating", {}).get("label", ""),
-                    "version": entry.get("im:version", {}).get("label", ""),
-                    "updated": entry.get("updated", {}).get("label", ""),
-                })
-            log.append(f"✅ Получено отзывов со страницы: {len(entries)}")
-            time.sleep(0.7)
-
-        update_progress(1.0, 1.0, "Готово")
-
-    # Лог (свёрнутый)
     with st.expander("📜 Лог загрузки", expanded=False):
         st.code("\n".join(log), language="text")
 
-    # --- Результаты ---
     if not reviews:
         st.warning(
             "Отзывов не найдено. Проверьте ID и страну. "
@@ -300,7 +248,7 @@ if start_btn:
         },
     )
 
-    # Скачивание CSV
+    # Скачивание
     csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     filename = f"app_{app_id}_{final_country}_reviews_{datetime.now():%Y%m%d_%H%M%S}.csv"
 
@@ -311,5 +259,4 @@ if start_btn:
         mime="text/csv",
         type="primary",
     )
-
     st.caption(f"Файл будет сохранён как `{filename}`")
