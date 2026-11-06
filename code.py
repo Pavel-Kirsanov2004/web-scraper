@@ -20,7 +20,6 @@ import pandas as pd
 import time
 import os
 import re
-from google.colab import files
 
 
 # -------- ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ --------
